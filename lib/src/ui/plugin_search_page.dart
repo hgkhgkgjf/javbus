@@ -734,24 +734,100 @@ class _PluginSearchPageState extends State<PluginSearchPage> {
   }
 
   Future<void> _saveMagnet(MagnetItem item) async {
-    if (item.magnet.isEmpty) {
+    MagnetItem target = item;
+    if (target.magnet.isEmpty) {
+      final MagnetItem? detailed = await _loadDetailsForSave(item);
+      if (detailed != null) {
+        target = detailed;
+      }
+    }
+    if (target.magnet.isEmpty) {
       _showSnack('当前结果没有 magnet 链接');
       return;
     }
-    final String stableId = item.infoHash.isNotEmpty
-        ? item.infoHash.toUpperCase()
-        : item.magnet.hashCode.toUnsigned(32).toRadixString(16);
+    final String stableId = target.infoHash.isNotEmpty
+        ? 'magnet_${target.infoHash.toUpperCase()}'
+        : 'magnet_${_stableFavoriteId(target.magnet)}';
     await _magnetLibrary.upsert(
       newStoredMagnet(
         id: stableId,
-        title: item.title.isEmpty ? item.infoHash : item.title,
-        magnet: item.magnet,
-        tags: <String>[item.pluginName],
-        note: item.largestFile,
+        title: target.title.isEmpty ? target.infoHash : target.title,
+        magnet: target.magnet,
+        tags: <String>[target.pluginName],
+        note: target.largestFile,
+        source: target.webUrl,
       ),
     );
     if (mounted) {
       _showSnack('已保存到收藏');
+    }
+  }
+
+  Future<MagnetItem?> _loadDetailsForSave(MagnetItem item) async {
+    final JsonSourcePlugin? plugin = _selectedPlugin;
+    if (plugin == null || plugin.detail == null) {
+      return null;
+    }
+    final String key = item.stableKey;
+    if (mounted) {
+      setState(() => _loadingDetails.add(key));
+    }
+    try {
+      final MagnetItem? webViewDetailed = await _detailsWithVerifiedWebView(
+        plugin,
+        item,
+      );
+      final MagnetItem detailed =
+          webViewDetailed ?? await _registry.details(plugin, item);
+      if (mounted) {
+        setState(() {
+          _items = _items
+              .map(
+                (MagnetItem candidate) =>
+                    candidate.stableKey == key ? detailed : candidate,
+              )
+              .toList(growable: false);
+        });
+      }
+      return detailed;
+    } on PluginHumanVerificationException catch (error) {
+      if (!mounted) {
+        return null;
+      }
+      final HumanVerificationResult? verification =
+          await _handleHumanVerification(plugin, error);
+      if (verification != null &&
+          verification.hasHtml &&
+          plugin.detail!.isHtml) {
+        final MagnetItem parsed = plugin.parseDetailHtml(
+          item,
+          verification.html,
+        );
+        if (mounted) {
+          setState(() {
+            _items = _items
+                .map(
+                  (MagnetItem candidate) =>
+                      candidate.stableKey == key ? parsed : candidate,
+                )
+                .toList(growable: false);
+          });
+        }
+        return parsed;
+      }
+      if (verification != null && verification.hasCookie) {
+        return _loadDetailsForSave(item);
+      }
+      return null;
+    } catch (error) {
+      if (mounted) {
+        _showSnack(error.toString());
+      }
+      return null;
+    } finally {
+      if (mounted) {
+        setState(() => _loadingDetails.remove(key));
+      }
     }
   }
 
@@ -2440,7 +2516,9 @@ class _MagnetCard extends StatelessWidget {
                 label: const Text('复制 magnet'),
               ),
               OutlinedButton.icon(
-                onPressed: item.magnet.isEmpty ? null : onSave,
+                onPressed: item.magnet.isEmpty && item.sourceItemId.isEmpty
+                    ? null
+                    : onSave,
                 icon: const Icon(Icons.bookmark_add_rounded, size: 18),
                 label: const Text('保存'),
               ),
@@ -3269,4 +3347,13 @@ class _ValueBadge extends StatelessWidget {
       ),
     );
   }
+}
+
+String _stableFavoriteId(String value) {
+  var hash = 2166136261;
+  for (final int codeUnit in value.codeUnits) {
+    hash ^= codeUnit;
+    hash = (hash * 16777619) & 0xFFFFFFFF;
+  }
+  return hash.toUnsigned(32).toRadixString(16).padLeft(8, '0');
 }

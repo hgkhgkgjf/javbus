@@ -179,7 +179,7 @@ class _PanSearchSectionState extends State<PanSearchSection> {
   Future<void> _saveShare(PanShareItem item) async {
     await _library.upsert(
       newStoredFavorite(
-        id: 'pan_${item.url.hashCode.toUnsigned(32).toRadixString(16)}',
+        id: 'pan_${_stableId(item.url)}',
         kind: FavoriteKind.pan,
         title: item.title,
         url: item.url,
@@ -258,7 +258,7 @@ class _PanCommandInput extends StatelessWidget {
   }
 }
 
-class _PanGroupCard extends StatelessWidget {
+class _PanGroupCard extends StatefulWidget {
   const _PanGroupCard({
     required this.group,
     required this.onCopy,
@@ -270,18 +270,30 @@ class _PanGroupCard extends StatelessWidget {
   final ValueChanged<PanShareItem> onSave;
 
   @override
+  State<_PanGroupCard> createState() => _PanGroupCardState();
+}
+
+class _PanGroupCardState extends State<_PanGroupCard> {
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
+    final List<PanShareItem> visibleItems = _expanded
+        ? widget.group.items
+        : widget.group.items.take(8).toList(growable: false);
+    final int hiddenCount = widget.group.items.length - visibleItems.length;
+
     return _PanSurface(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           Row(
             children: <Widget>[
-              _CloudBadge(type: group.cloudType),
+              _CloudBadge(type: widget.group.cloudType),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  _cloudLabel(group.cloudType),
+                  _cloudLabel(widget.group.cloudType),
                   style: TextStyle(
                     color: AppTheme.text1(context),
                     fontWeight: FontWeight.w800,
@@ -289,21 +301,46 @@ class _PanGroupCard extends StatelessWidget {
                   ),
                 ),
               ),
-              _SmallCountBadge(text: '${group.items.length} 条'),
+              _SmallCountBadge(text: '${widget.group.items.length} 条'),
             ],
           ),
           const SizedBox(height: 10),
-          for (final PanShareItem item in group.items.take(8)) ...<Widget>[
-            _PanShareRow(item: item, onCopy: onCopy, onSave: onSave),
-            if (item != group.items.take(8).last)
+          for (final PanShareItem item in visibleItems) ...<Widget>[
+            _PanShareRow(
+              item: item,
+              onCopy: widget.onCopy,
+              onSave: widget.onSave,
+            ),
+            if (item != visibleItems.last)
               Divider(color: AppTheme.border(context), height: 14),
           ],
-          if (group.items.length > 8)
+          if (widget.group.items.length > 8)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text(
-                '还有 ${group.items.length - 8} 条结果未显示',
-                style: TextStyle(color: AppTheme.text3(context), fontSize: 12),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      _expanded
+                          ? '已显示全部 ${widget.group.items.length} 条结果'
+                          : '还有 $hiddenCount 条结果未显示',
+                      style: TextStyle(
+                        color: AppTheme.text3(context),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => setState(() => _expanded = !_expanded),
+                    icon: Icon(
+                      _expanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      size: 18,
+                    ),
+                    label: Text(_expanded ? '收起' : '展开'),
+                  ),
+                ],
               ),
             ),
         ],
@@ -667,4 +704,13 @@ String _formatDate(DateTime value) {
   final DateTime local = value.toLocal();
   String two(int number) => number.toString().padLeft(2, '0');
   return '${local.year}-${two(local.month)}-${two(local.day)}';
+}
+
+String _stableId(String value) {
+  var hash = 2166136261;
+  for (final int codeUnit in value.codeUnits) {
+    hash ^= codeUnit;
+    hash = (hash * 16777619) & 0xFFFFFFFF;
+  }
+  return hash.toUnsigned(32).toRadixString(16).padLeft(8, '0');
 }

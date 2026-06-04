@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import '../storage/app_storage.dart';
 
 enum FavoriteKind {
@@ -112,6 +114,8 @@ class StoredFavorite {
 typedef StoredMagnet = StoredFavorite;
 
 class MagnetLibrary {
+  static final ValueNotifier<int> revision = ValueNotifier<int>(0);
+
   Future<List<StoredFavorite>> load() async {
     final File file = await _file();
     if (await file.exists()) {
@@ -150,6 +154,7 @@ class MagnetLibrary {
       items.insert(0, updated);
     }
     await saveAll(items);
+    revision.value++;
     return updated;
   }
 
@@ -157,6 +162,7 @@ class MagnetLibrary {
     final List<StoredFavorite> items = await load();
     items.removeWhere((StoredFavorite item) => item.id == id);
     await saveAll(items);
+    revision.value++;
   }
 
   Future<List<StoredFavorite>> _readFavorites(File file) async {

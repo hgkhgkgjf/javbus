@@ -1,5 +1,5 @@
 #define MyAppName "JAVBUS"
-#define MyAppVersion "0.0.1"
+#define MyAppVersion "0.0.5"
 #define MyAppPublisher "WEP-56"
 #define MyAppExeName "javbus.exe"
 

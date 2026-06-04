@@ -22,11 +22,13 @@ class _MagnetLibraryPageState extends State<MagnetLibraryPage> {
   @override
   void initState() {
     super.initState();
+    MagnetLibrary.revision.addListener(_load);
     _load();
   }
 
   @override
   void dispose() {
+    MagnetLibrary.revision.removeListener(_load);
     _filterController.dispose();
     super.dispose();
   }
