@@ -181,7 +181,7 @@ class _MagnetLibraryPageState extends State<MagnetLibraryPage> {
     }
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+      ..showSnackBar(appSnack(message));
   }
 }
 
@@ -530,7 +530,7 @@ class _FavoriteEditorDialogState extends State<_FavoriteEditorDialog> {
     if (!_validUrlFor(_kind, url)) {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text('${_urlLabel(_kind)}无效')));
+        ..showSnackBar(appSnack('${_urlLabel(_kind)}无效'));
       return;
     }
     final List<String> tags = _tagsController.text

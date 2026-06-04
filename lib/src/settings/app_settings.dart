@@ -8,11 +8,23 @@ class AppSettings {
     required this.panServiceUrl,
     required this.panRequiresApiKey,
     required this.panApiKey,
+    required this.lanReceiveDirectory,
+    required this.themeMode,
+    required this.accentColor,
+    required this.windowsCloseBehavior,
+    required this.windowWidth,
+    required this.windowHeight,
   });
 
   final String panServiceUrl;
   final bool panRequiresApiKey;
   final String panApiKey;
+  final String lanReceiveDirectory;
+  final String themeMode;
+  final String accentColor;
+  final String windowsCloseBehavior;
+  final double windowWidth;
+  final double windowHeight;
 
   bool get hasPanService => panServiceUrl.trim().isNotEmpty;
 
@@ -20,11 +32,23 @@ class AppSettings {
     String? panServiceUrl,
     bool? panRequiresApiKey,
     String? panApiKey,
+    String? lanReceiveDirectory,
+    String? themeMode,
+    String? accentColor,
+    String? windowsCloseBehavior,
+    double? windowWidth,
+    double? windowHeight,
   }) {
     return AppSettings(
       panServiceUrl: panServiceUrl ?? this.panServiceUrl,
       panRequiresApiKey: panRequiresApiKey ?? this.panRequiresApiKey,
       panApiKey: panApiKey ?? this.panApiKey,
+      lanReceiveDirectory: lanReceiveDirectory ?? this.lanReceiveDirectory,
+      themeMode: themeMode ?? this.themeMode,
+      accentColor: accentColor ?? this.accentColor,
+      windowsCloseBehavior: windowsCloseBehavior ?? this.windowsCloseBehavior,
+      windowWidth: windowWidth ?? this.windowWidth,
+      windowHeight: windowHeight ?? this.windowHeight,
     );
   }
 
@@ -33,6 +57,12 @@ class AppSettings {
       'panServiceUrl': panServiceUrl,
       'panRequiresApiKey': panRequiresApiKey,
       'panApiKey': panApiKey,
+      'lanReceiveDirectory': lanReceiveDirectory,
+      'themeMode': themeMode,
+      'accentColor': accentColor,
+      'windowsCloseBehavior': windowsCloseBehavior,
+      'windowWidth': windowWidth,
+      'windowHeight': windowHeight,
     };
   }
 
@@ -41,6 +71,14 @@ class AppSettings {
       panServiceUrl: _stringValue(json['panServiceUrl']),
       panRequiresApiKey: _boolValue(json['panRequiresApiKey']),
       panApiKey: _stringValue(json['panApiKey']),
+      lanReceiveDirectory: _stringValue(json['lanReceiveDirectory']),
+      themeMode: _themeModeValue(json['themeMode']),
+      accentColor: _accentColorValue(json['accentColor']),
+      windowsCloseBehavior: _windowsCloseBehaviorValue(
+        json['windowsCloseBehavior'],
+      ),
+      windowWidth: _doubleValue(json['windowWidth'], 1280),
+      windowHeight: _doubleValue(json['windowHeight'], 720),
     );
   }
 
@@ -48,6 +86,12 @@ class AppSettings {
     panServiceUrl: '',
     panRequiresApiKey: false,
     panApiKey: '',
+    lanReceiveDirectory: '',
+    themeMode: 'system',
+    accentColor: 'teal',
+    windowsCloseBehavior: 'minimizeToTray',
+    windowWidth: 1280,
+    windowHeight: 720,
   );
 }
 
@@ -99,4 +143,35 @@ bool _boolValue(Object? value, [bool fallback = false]) {
     return value.toLowerCase() == 'true';
   }
   return fallback;
+}
+
+double _doubleValue(Object? value, double fallback) {
+  if (value is num) {
+    return value.toDouble();
+  }
+  return double.tryParse(value?.toString() ?? '') ?? fallback;
+}
+
+String _themeModeValue(Object? value) {
+  final String mode = _stringValue(value, 'system');
+  return switch (mode) {
+    'light' || 'dark' || 'system' => mode,
+    _ => 'system',
+  };
+}
+
+String _accentColorValue(Object? value) {
+  final String color = _stringValue(value, 'teal');
+  return switch (color) {
+    'teal' || 'blue' || 'violet' || 'rose' || 'amber' || 'green' => color,
+    _ => 'teal',
+  };
+}
+
+String _windowsCloseBehaviorValue(Object? value) {
+  final String behavior = _stringValue(value, 'minimizeToTray');
+  return switch (behavior) {
+    'minimizeToTray' || 'exit' => behavior,
+    _ => 'minimizeToTray',
+  };
 }

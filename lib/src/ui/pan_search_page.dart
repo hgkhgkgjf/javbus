@@ -197,7 +197,7 @@ class _PanSearchSectionState extends State<PanSearchSection> {
   void _showSnack(String message) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+      ..showSnackBar(appSnack(message));
   }
 }
 

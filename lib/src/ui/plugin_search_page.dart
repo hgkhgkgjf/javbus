@@ -14,6 +14,7 @@ import '../lan/lan_transfer_service.dart';
 import '../magnets/magnet_library.dart';
 import '../plugins/json_source_plugin.dart';
 import '../plugins/magnet_item.dart';
+import '../platform/android_foreground_service.dart';
 import '../settings/app_settings.dart';
 import 'human_verification_dialog.dart';
 import 'lan_transfer_page.dart';
@@ -22,8 +23,8 @@ import 'pan_search_page.dart';
 
 enum _WorkbenchSection {
   search('资源搜索', '磁力', Icons.search_rounded),
-  library('收藏管理', '收藏', Icons.bookmarks_rounded),
   pan('搜盘', '搜盘', Icons.cloud_rounded),
+  library('收藏管理', '收藏', Icons.bookmarks_rounded),
   lan('局域网互传', '互传', Icons.sync_alt_rounded),
   settings('设置中心', '设置', Icons.tune_rounded);
 
@@ -33,6 +34,13 @@ enum _WorkbenchSection {
   final String dockLabel;
   final IconData icon;
 }
+
+const List<_WorkbenchSection> _dockSections = <_WorkbenchSection>[
+  _WorkbenchSection.search,
+  _WorkbenchSection.pan,
+  _WorkbenchSection.library,
+  _WorkbenchSection.lan,
+];
 
 class PluginSearchPage extends StatefulWidget {
   const PluginSearchPage({super.key});
@@ -45,6 +53,7 @@ class _PluginSearchPageState extends State<PluginSearchPage> {
   final JsonPluginRegistry _registry = JsonPluginRegistry();
   final MagnetLibrary _magnetLibrary = MagnetLibrary();
   final LanTransferService _lanTransferService = LanTransferService();
+  final AppSettingsStore _settingsStore = AppSettingsStore();
   final TextEditingController _queryController = TextEditingController();
   final TextEditingController _pluginFilterController = TextEditingController();
   final Map<String, VerifiedWebViewSession> _verifiedSessions =
@@ -56,8 +65,9 @@ class _PluginSearchPageState extends State<PluginSearchPage> {
   JsonSourcePlugin? _selectedPlugin;
   List<MagnetItem> _items = const <MagnetItem>[];
   final Set<String> _loadingDetails = <String>{};
-  Brightness? _forcedBrightness;
+  AppSettings _settings = AppSettings.empty;
   bool _loadingPlugins = true;
+  bool _loadingSettings = true;
   bool _searching = false;
   bool _showPluginSettings = false;
   String? _message;
@@ -70,6 +80,11 @@ class _PluginSearchPageState extends State<PluginSearchPage> {
   @override
   void initState() {
     super.initState();
+    if (Platform.isAndroid) {
+      _lanTransferService.addListener(_syncAndroidForegroundStatus);
+    }
+    unawaited(_lanTransferService.start());
+    _loadSettings();
     _loadPlugins();
   }
 
@@ -80,17 +95,19 @@ class _PluginSearchPageState extends State<PluginSearchPage> {
     for (final VerifiedWebViewSession session in _verifiedSessions.values) {
       unawaited(session.dispose());
     }
+    if (Platform.isAndroid) {
+      _lanTransferService.removeListener(_syncAndroidForegroundStatus);
+    }
     unawaited(_lanTransferService.stop());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final Brightness brightness =
-        _forcedBrightness ?? MediaQuery.platformBrightnessOf(context);
+    final Brightness brightness = _effectiveBrightness(context);
 
     return Theme(
-      data: buildAppTheme(brightness),
+      data: buildAppTheme(brightness, accentColor: _settings.accentColor),
       child: Builder(
         builder: (BuildContext context) {
           final bool compact = MediaQuery.sizeOf(context).width < 760;
@@ -125,21 +142,7 @@ class _PluginSearchPageState extends State<PluginSearchPage> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: <Widget>[
-                                  Expanded(
-                                    child: AnimatedSwitcher(
-                                      duration: const Duration(
-                                        milliseconds: 180,
-                                      ),
-                                      switchInCurve: Curves.easeOutCubic,
-                                      switchOutCurve: Curves.easeInCubic,
-                                      child: KeyedSubtree(
-                                        key: ValueKey<String>(
-                                          '${_active.name}:$_showPluginSettings',
-                                        ),
-                                        child: _buildActiveSection(),
-                                      ),
-                                    ),
-                                  ),
+                                  Expanded(child: _buildWorkspaceContent()),
                                 ],
                               ),
                             ),
@@ -164,7 +167,12 @@ class _PluginSearchPageState extends State<PluginSearchPage> {
                                 }
                               });
                             },
-                            onToggleTheme: _toggleTheme,
+                            onOpenSettings: () {
+                              setState(() {
+                                _active = _WorkbenchSection.settings;
+                                _showPluginSettings = false;
+                              });
+                            },
                           ),
                         ),
                       ),
@@ -179,44 +187,86 @@ class _PluginSearchPageState extends State<PluginSearchPage> {
     );
   }
 
-  Widget _buildActiveSection() {
-    switch (_active) {
-      case _WorkbenchSection.search:
-        return _buildSearchSection();
-      case _WorkbenchSection.library:
-        return const MagnetLibraryPage();
-      case _WorkbenchSection.pan:
-        return const PanSearchSection();
-      case _WorkbenchSection.lan:
-        return LanTransferPage(service: _lanTransferService);
-      case _WorkbenchSection.settings:
-        if (_showPluginSettings) {
-          return _PluginsSection(
-            plugins: _filteredPlugins,
-            selectedPlugin: _selectedPlugin,
-            loading: _loadingPlugins,
-            filterController: _pluginFilterController,
-            onFilterChanged: (String value) {
-              setState(() => _pluginFilter = value);
-            },
-            onSelect: _selectPlugin,
-            onInstall: _installPlugin,
-            onCreate: _createPlugin,
-            onEdit: _editPlugin,
-            onDelete: _deletePlugin,
-            onReload: _loadPlugins,
-            onBack: () => setState(() => _showPluginSettings = false),
-          );
-        }
-        return _SettingsSection(
-          pluginCount: _plugins.length,
-          forcedBrightness: _forcedBrightness,
-          onThemeModeChanged: (Brightness? brightness) {
-            setState(() => _forcedBrightness = brightness);
-          },
-          onOpenPlugins: () => setState(() => _showPluginSettings = true),
-        );
+  Widget _buildWorkspaceContent() {
+    final bool showingSettings = _active == _WorkbenchSection.settings;
+    return Stack(
+      children: <Widget>[
+        Positioned.fill(
+          child: Offstage(
+            offstage: showingSettings,
+            child: TickerMode(
+              enabled: !showingSettings,
+              child: IndexedStack(
+                index: _primarySectionIndex,
+                children: <Widget>[
+                  _buildSearchSection(),
+                  const PanSearchSection(),
+                  const MagnetLibraryPage(),
+                  LanTransferPage(service: _lanTransferService),
+                ],
+              ),
+            ),
+          ),
+        ),
+        if (showingSettings)
+          Positioned.fill(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              child: KeyedSubtree(
+                key: ValueKey<bool>(_showPluginSettings),
+                child: _buildSettingsSection(),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  int get _primarySectionIndex {
+    return switch (_active) {
+      _WorkbenchSection.search || _WorkbenchSection.settings => 0,
+      _WorkbenchSection.pan => 1,
+      _WorkbenchSection.library => 2,
+      _WorkbenchSection.lan => 3,
+    };
+  }
+
+  Widget _buildSettingsSection() {
+    if (_showPluginSettings) {
+      return _PluginsSection(
+        plugins: _filteredPlugins,
+        selectedPlugin: _selectedPlugin,
+        loading: _loadingPlugins,
+        filterController: _pluginFilterController,
+        onFilterChanged: (String value) {
+          setState(() => _pluginFilter = value);
+        },
+        onSelect: _selectPlugin,
+        onInstall: _installPlugin,
+        onCreate: _createPlugin,
+        onEdit: _editPlugin,
+        onDelete: _deletePlugin,
+        onReload: _loadPlugins,
+        onBack: () => setState(() => _showPluginSettings = false),
+      );
     }
+    return _SettingsSection(
+      pluginCount: _plugins.length,
+      settings: _settings,
+      loading: _loadingSettings,
+      onSettingsChanged: _saveSettings,
+      onOpenPlugins: () => setState(() => _showPluginSettings = true),
+    );
+  }
+
+  Brightness _effectiveBrightness(BuildContext context) {
+    return switch (_settings.themeMode) {
+      'light' => Brightness.light,
+      'dark' => Brightness.dark,
+      _ => MediaQuery.platformBrightnessOf(context),
+    };
   }
 
   Widget _buildSearchSection() {
@@ -381,6 +431,42 @@ class _PluginSearchPageState extends State<PluginSearchPage> {
         setState(() => _loadingPlugins = false);
       }
     }
+  }
+
+  Future<void> _loadSettings() async {
+    try {
+      final AppSettings settings = await _settingsStore.load();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _settings = settings;
+        _loadingSettings = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _loadingSettings = false);
+      _showSnack(error.toString());
+    }
+  }
+
+  Future<void> _saveSettings(AppSettings settings) async {
+    await _settingsStore.save(settings);
+    if (mounted) {
+      setState(() => _settings = settings);
+    }
+  }
+
+  void _syncAndroidForegroundStatus() {
+    unawaited(
+      updateAndroidForegroundStatus(
+        running: _lanTransferService.running,
+        peerCount: _lanTransferService.peers.length,
+        error: _lanTransferService.error,
+      ),
+    );
   }
 
   void _selectPlugin(JsonSourcePlugin plugin) {
@@ -943,17 +1029,10 @@ class _PluginSearchPageState extends State<PluginSearchPage> {
     }
   }
 
-  void _toggleTheme() {
-    final bool currentlyDark = AppTheme.isDark(context);
-    setState(() {
-      _forcedBrightness = currentlyDark ? Brightness.light : Brightness.dark;
-    });
-  }
-
   void _showSnack(String message) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+      ..showSnackBar(appSnack(message));
   }
 }
 
@@ -1657,7 +1736,7 @@ class _PluginEditorDialogState extends State<_PluginEditorDialog> {
   void _showDialogSnack(String message) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+      ..showSnackBar(appSnack(message));
   }
 }
 
@@ -1767,14 +1846,16 @@ Map<String, Object?> _fieldsFromText(String text) {
 class _SettingsSection extends StatefulWidget {
   const _SettingsSection({
     required this.pluginCount,
-    required this.forcedBrightness,
-    required this.onThemeModeChanged,
+    required this.settings,
+    required this.loading,
+    required this.onSettingsChanged,
     required this.onOpenPlugins,
   });
 
   final int pluginCount;
-  final Brightness? forcedBrightness;
-  final ValueChanged<Brightness?> onThemeModeChanged;
+  final AppSettings settings;
+  final bool loading;
+  final Future<void> Function(AppSettings settings) onSettingsChanged;
   final VoidCallback onOpenPlugins;
 
   @override
@@ -1782,18 +1863,27 @@ class _SettingsSection extends StatefulWidget {
 }
 
 class _SettingsSectionState extends State<_SettingsSection> {
-  final AppSettingsStore _settingsStore = AppSettingsStore();
   final TextEditingController _panServiceController = TextEditingController();
   final TextEditingController _panKeyController = TextEditingController();
 
-  bool _loading = true;
   bool _saving = false;
   bool _panRequiresKey = false;
 
   @override
   void initState() {
     super.initState();
-    _loadSettings();
+    _syncForm();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SettingsSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.settings.panServiceUrl != widget.settings.panServiceUrl ||
+        oldWidget.settings.panApiKey != widget.settings.panApiKey ||
+        oldWidget.settings.panRequiresApiKey !=
+            widget.settings.panRequiresApiKey) {
+      _syncForm();
+    }
   }
 
   @override
@@ -1803,17 +1893,10 @@ class _SettingsSectionState extends State<_SettingsSection> {
     super.dispose();
   }
 
-  Future<void> _loadSettings() async {
-    final AppSettings settings = await _settingsStore.load();
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _panServiceController.text = settings.panServiceUrl;
-      _panKeyController.text = settings.panApiKey;
-      _panRequiresKey = settings.panRequiresApiKey;
-      _loading = false;
-    });
+  void _syncForm() {
+    _panServiceController.text = widget.settings.panServiceUrl;
+    _panKeyController.text = widget.settings.panApiKey;
+    _panRequiresKey = widget.settings.panRequiresApiKey;
   }
 
   Future<void> _saveSettings() async {
@@ -1829,8 +1912,8 @@ class _SettingsSectionState extends State<_SettingsSection> {
     }
     setState(() => _saving = true);
     try {
-      await _settingsStore.save(
-        AppSettings(
+      await widget.onSettingsChanged(
+        widget.settings.copyWith(
           panServiceUrl: serviceUrl,
           panRequiresApiKey: _panRequiresKey,
           panApiKey: _panKeyController.text.trim(),
@@ -1850,16 +1933,63 @@ class _SettingsSectionState extends State<_SettingsSection> {
     }
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+      ..showSnackBar(appSnack(message));
+  }
+
+  Future<void> _saveAppearance({String? themeMode, String? accentColor}) async {
+    await widget.onSettingsChanged(
+      widget.settings.copyWith(themeMode: themeMode, accentColor: accentColor),
+    );
+  }
+
+  Future<void> _saveWindowsCloseBehavior(String behavior) async {
+    await widget.onSettingsChanged(
+      widget.settings.copyWith(windowsCloseBehavior: behavior),
+    );
+    _showSnack(behavior == 'exit' ? '关闭按钮将直接退出' : '关闭按钮将隐藏到托盘');
+  }
+
+  Future<void> _chooseLanReceiveDirectory() async {
+    final String? directory = await FilePicker.getDirectoryPath(
+      dialogTitle: '选择互传接收目录',
+      initialDirectory: widget.settings.lanReceiveDirectory.trim().isEmpty
+          ? null
+          : widget.settings.lanReceiveDirectory.trim(),
+    );
+    if (directory == null || directory.trim().isEmpty) {
+      return;
+    }
+    try {
+      final Directory target = Directory(directory.trim());
+      if (!await target.exists()) {
+        await target.create(recursive: true);
+      }
+      final File probe = File(
+        '${target.path}${Platform.pathSeparator}.javbus_write_test',
+      );
+      await probe.writeAsString('ok');
+      await probe.delete();
+    } on Object catch (error) {
+      _showSnack('目录不可用：$error');
+      return;
+    }
+    await widget.onSettingsChanged(
+      widget.settings.copyWith(lanReceiveDirectory: directory.trim()),
+    );
+    _showSnack('互传接收目录已保存');
+  }
+
+  Future<void> _resetLanReceiveDirectory() async {
+    await widget.onSettingsChanged(
+      widget.settings.copyWith(lanReceiveDirectory: ''),
+    );
+    _showSnack('已恢复默认接收目录');
   }
 
   @override
   Widget build(BuildContext context) {
-    final String selected = switch (widget.forcedBrightness) {
-      null => 'system',
-      Brightness.light => 'light',
-      Brightness.dark => 'dark',
-    };
+    final String selected = widget.settings.themeMode;
+    final bool busy = widget.loading || _saving;
 
     return CustomScrollView(
       slivers: <Widget>[
@@ -1877,16 +2007,52 @@ class _SettingsSectionState extends State<_SettingsSection> {
               ],
               selected: <String>{selected},
               onSelectionChanged: (Set<String> values) {
-                final String value = values.first;
-                widget.onThemeModeChanged(switch (value) {
-                  'light' => Brightness.light,
-                  'dark' => Brightness.dark,
-                  _ => null,
-                });
+                _saveAppearance(themeMode: values.first);
               },
             ),
           ),
         ),
+        const SliverToBoxAdapter(child: SizedBox(height: 10)),
+        SliverToBoxAdapter(
+          child: _SettingTile(
+            icon: Icons.palette_rounded,
+            title: '主题色',
+            subtitle: '选择界面高亮色，双端都会保存到本地设置。',
+            trailing: _AccentPicker(
+              selected: widget.settings.accentColor,
+              enabled: !busy,
+              onChanged: (String value) {
+                _saveAppearance(accentColor: value);
+              },
+            ),
+          ),
+        ),
+        if (Platform.isWindows) ...<Widget>[
+          const SliverToBoxAdapter(child: SizedBox(height: 10)),
+          SliverToBoxAdapter(
+            child: _SettingTile(
+              icon: Icons.space_dashboard_rounded,
+              title: '关闭按钮行为',
+              subtitle: '选择点窗口关闭按钮时隐藏到托盘继续运行，或直接退出应用。',
+              trailing: SegmentedButton<String>(
+                showSelectedIcon: false,
+                segments: const <ButtonSegment<String>>[
+                  ButtonSegment<String>(
+                    value: 'minimizeToTray',
+                    label: Text('隐藏到托盘'),
+                  ),
+                  ButtonSegment<String>(value: 'exit', label: Text('退出')),
+                ],
+                selected: <String>{widget.settings.windowsCloseBehavior},
+                onSelectionChanged: busy
+                    ? null
+                    : (Set<String> values) {
+                        _saveWindowsCloseBehavior(values.first);
+                      },
+              ),
+            ),
+          ),
+        ],
         const SliverToBoxAdapter(child: SizedBox(height: 10)),
         SliverToBoxAdapter(
           child: _SettingTile(
@@ -1897,11 +2063,25 @@ class _SettingsSectionState extends State<_SettingsSection> {
               serviceController: _panServiceController,
               keyController: _panKeyController,
               requiresKey: _panRequiresKey,
-              loading: _loading || _saving,
+              loading: busy,
               onRequiresKeyChanged: (bool value) {
                 setState(() => _panRequiresKey = value);
               },
               onSave: _saveSettings,
+            ),
+          ),
+        ),
+        const SliverToBoxAdapter(child: SizedBox(height: 10)),
+        SliverToBoxAdapter(
+          child: _SettingTile(
+            icon: Icons.download_rounded,
+            title: '互传接收目录',
+            subtitle: 'Windows 和 Android 接收文件时会保存到这里；留空则使用应用默认目录。',
+            trailing: _DirectoryPickerControl(
+              path: widget.settings.lanReceiveDirectory,
+              loading: busy,
+              onChoose: _chooseLanReceiveDirectory,
+              onReset: _resetLanReceiveDirectory,
             ),
           ),
         ),
@@ -2015,6 +2195,134 @@ class _PanSettingsForm extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _DirectoryPickerControl extends StatelessWidget {
+  const _DirectoryPickerControl({
+    required this.path,
+    required this.loading,
+    required this.onChoose,
+    required this.onReset,
+  });
+
+  final String path;
+  final bool loading;
+  final VoidCallback onChoose;
+  final VoidCallback onReset;
+
+  @override
+  Widget build(BuildContext context) {
+    final String trimmed = path.trim();
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 420),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppTheme.elevated(context),
+              border: Border.all(color: AppTheme.border(context)),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              trimmed.isEmpty ? '应用默认目录' : trimmed,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: trimmed.isEmpty
+                    ? AppTheme.text3(context)
+                    : AppTheme.text2(context),
+                fontSize: 12,
+                fontFamily: trimmed.isEmpty ? null : 'Consolas',
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.end,
+            children: <Widget>[
+              OutlinedButton.icon(
+                onPressed: loading || trimmed.isEmpty ? null : onReset,
+                icon: const Icon(Icons.restore_rounded, size: 18),
+                label: const Text('默认'),
+              ),
+              FilledButton.icon(
+                onPressed: loading ? null : onChoose,
+                icon: const Icon(Icons.folder_open_rounded, size: 18),
+                label: const Text('选择目录'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AccentPicker extends StatelessWidget {
+  const _AccentPicker({
+    required this.selected,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final String selected;
+  final bool enabled;
+  final ValueChanged<String> onChanged;
+
+  static const List<({String id, String label})> _items =
+      <({String id, String label})>[
+        (id: 'teal', label: '青绿'),
+        (id: 'blue', label: '蓝色'),
+        (id: 'violet', label: '紫色'),
+        (id: 'rose', label: '玫红'),
+        (id: 'amber', label: '琥珀'),
+        (id: 'green', label: '绿色'),
+      ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: <Widget>[
+        for (final ({String id, String label}) item in _items)
+          Tooltip(
+            message: item.label,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(999),
+              onTap: enabled ? () => onChanged(item.id) : null,
+              child: Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: appAccentColor(item.id, Theme.of(context).brightness),
+                  border: Border.all(
+                    color: item.id == selected
+                        ? AppTheme.text1(context)
+                        : AppTheme.border(context),
+                    width: item.id == selected ? 2 : 1,
+                  ),
+                ),
+                child: item.id == selected
+                    ? Icon(
+                        Icons.check_rounded,
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? Colors.black
+                            : Colors.white,
+                        size: 17,
+                      )
+                    : null,
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -2395,14 +2703,14 @@ class _FloatingDock extends StatelessWidget {
     required this.compact,
     required this.dark,
     required this.onChanged,
-    required this.onToggleTheme,
+    required this.onOpenSettings,
   });
 
   final _WorkbenchSection active;
   final bool compact;
   final bool dark;
   final ValueChanged<_WorkbenchSection> onChanged;
-  final VoidCallback onToggleTheme;
+  final VoidCallback onOpenSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -2429,8 +2737,7 @@ class _FloatingDock extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
-                  for (final _WorkbenchSection section
-                      in _WorkbenchSection.values)
+                  for (final _WorkbenchSection section in _dockSections)
                     _DockItem(
                       section: section,
                       selected: section == active,
@@ -2444,17 +2751,17 @@ class _FloatingDock extends StatelessWidget {
                     color: AppTheme.border(context),
                   ),
                   Tooltip(
-                    message: dark ? '切换浅色' : '切换深色',
+                    message: '设置',
                     child: IconButton(
-                      onPressed: onToggleTheme,
-                      icon: Icon(
-                        dark
-                            ? Icons.light_mode_rounded
-                            : Icons.dark_mode_rounded,
-                        size: 18,
-                      ),
-                      color: AppTheme.text2(context),
+                      onPressed: onOpenSettings,
+                      icon: const Icon(Icons.tune_rounded, size: 18),
+                      color: active == _WorkbenchSection.settings
+                          ? AppTheme.accent(context)
+                          : AppTheme.text2(context),
                       style: IconButton.styleFrom(
+                        backgroundColor: active == _WorkbenchSection.settings
+                            ? AppTheme.accentDim(context)
+                            : Colors.transparent,
                         fixedSize: const Size(38, 38),
                         minimumSize: const Size(38, 38),
                         padding: EdgeInsets.zero,

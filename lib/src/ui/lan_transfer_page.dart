@@ -226,7 +226,7 @@ class _LanTransferPageState extends State<LanTransferPage> {
     }
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+      ..showSnackBar(appSnack(message));
   }
 }
 
@@ -558,27 +558,43 @@ class _HistoryPanel extends StatelessWidget {
                 style: TextStyle(color: AppTheme.text3(context)),
               ),
             )
+          else if (fillAvailableHeight)
+            Expanded(
+              child: _HistoryList(records: records, onCopyText: onCopyText),
+            )
           else
-            _PanelListFrame(
-              fillAvailableHeight: fillAvailableHeight,
-              maxHeight: 420,
-              child: ListView.separated(
-                shrinkWrap: !fillAvailableHeight,
-                physics: fillAvailableHeight
-                    ? null
-                    : const NeverScrollableScrollPhysics(),
-                itemBuilder: (BuildContext context, int index) {
-                  return _HistoryItem(
-                    record: records[index],
-                    onCopyText: onCopyText,
-                  );
-                },
-                separatorBuilder: (_, __) => const SizedBox(height: 8),
-                itemCount: records.length,
-              ),
+            Column(
+              children: <Widget>[
+                for (
+                  int index = 0;
+                  index < records.length;
+                  index += 1
+                ) ...<Widget>[
+                  _HistoryItem(record: records[index], onCopyText: onCopyText),
+                  if (index != records.length - 1) const SizedBox(height: 8),
+                ],
+              ],
             ),
         ],
       ),
+    );
+  }
+}
+
+class _HistoryList extends StatelessWidget {
+  const _HistoryList({required this.records, required this.onCopyText});
+
+  final List<LanTransferRecord> records;
+  final ValueChanged<String> onCopyText;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.separated(
+      itemBuilder: (BuildContext context, int index) {
+        return _HistoryItem(record: records[index], onCopyText: onCopyText);
+      },
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemCount: records.length,
     );
   }
 }

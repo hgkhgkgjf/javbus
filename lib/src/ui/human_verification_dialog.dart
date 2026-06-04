@@ -295,9 +295,7 @@ class _HumanVerificationDialogState extends State<_HumanVerificationDialog> {
         (html == null || html.trim().isEmpty)) {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(
-          const SnackBar(content: Text('还没有读到可用 Cookie，请完成验证后再点一次。')),
-        );
+        ..showSnackBar(appSnack('还没有读到可用 Cookie，请完成验证后再点一次。'));
       return;
     }
     Navigator.of(context).pop(

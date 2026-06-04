@@ -1,9 +1,29 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+
+import 'platform/android_foreground_service.dart';
 import 'ui/plugin_search_page.dart';
 
-class MagnetFinderApp extends StatelessWidget {
+class MagnetFinderApp extends StatefulWidget {
   const MagnetFinderApp({super.key});
+
+  @override
+  State<MagnetFinderApp> createState() => _MagnetFinderAppState();
+}
+
+class _MagnetFinderAppState extends State<MagnetFinderApp> {
+  @override
+  void initState() {
+    super.initState();
+    if (Platform.isAndroid) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(startAndroidForegroundService());
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -13,21 +33,24 @@ class MagnetFinderApp extends StatelessWidget {
       themeMode: ThemeMode.system,
       theme: buildAppTheme(Brightness.light),
       darkTheme: buildAppTheme(Brightness.dark),
-      home: const PluginSearchPage(),
+      home: Platform.isAndroid
+          ? const WithForegroundTask(child: PluginSearchPage())
+          : const PluginSearchPage(),
     );
   }
 }
 
-ThemeData buildAppTheme(Brightness brightness) {
+ThemeData buildAppTheme(Brightness brightness, {String accentColor = 'teal'}) {
   final bool dark = brightness == Brightness.dark;
+  final Color accent = appAccentColor(accentColor, brightness);
   final ColorScheme scheme = dark
-      ? const ColorScheme.dark(
-          primary: AppColors.darkAccent,
+      ? ColorScheme.dark(
+          primary: accent,
           surface: AppColors.darkSurface,
           onSurface: AppColors.darkText1,
         )
-      : const ColorScheme.light(
-          primary: AppColors.lightAccent,
+      : ColorScheme.light(
+          primary: accent,
           surface: AppColors.lightSurface,
           onSurface: AppColors.lightText1,
         );
@@ -39,9 +62,9 @@ ThemeData buildAppTheme(Brightness brightness) {
     fontFamily: 'Segoe UI',
     useMaterial3: true,
     textSelectionTheme: TextSelectionThemeData(
-      cursorColor: dark ? AppColors.darkAccent : AppColors.lightAccent,
-      selectionColor: dark ? AppColors.darkAccentDim : AppColors.lightAccentDim,
-      selectionHandleColor: dark ? AppColors.darkAccent : AppColors.lightAccent,
+      cursorColor: accent,
+      selectionColor: accent.withValues(alpha: dark ? 0.18 : 0.12),
+      selectionHandleColor: accent,
     ),
     cardTheme: CardThemeData(
       color: dark ? AppColors.darkSurface : AppColors.lightSurface,
@@ -55,7 +78,7 @@ ThemeData buildAppTheme(Brightness brightness) {
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        backgroundColor: dark ? AppColors.darkAccent : AppColors.lightAccent,
+        backgroundColor: accent,
         foregroundColor: dark ? const Color(0xFF061210) : Colors.white,
         disabledBackgroundColor: dark
             ? AppColors.darkElevated
@@ -89,10 +112,7 @@ ThemeData buildAppTheme(Brightness brightness) {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(10),
-        borderSide: BorderSide(
-          color: dark ? AppColors.darkAccent : AppColors.lightAccent,
-          width: 1.4,
-        ),
+        borderSide: BorderSide(color: accent, width: 1.4),
       ),
     ),
     snackBarTheme: SnackBarThemeData(
@@ -144,15 +164,15 @@ abstract final class AppTheme {
   }
 
   static Color selected(BuildContext context) {
-    return isDark(context) ? AppColors.darkSelected : AppColors.lightSelected;
+    return accentDim(context);
   }
 
   static Color accent(BuildContext context) {
-    return isDark(context) ? AppColors.darkAccent : AppColors.lightAccent;
+    return Theme.of(context).colorScheme.primary;
   }
 
   static Color accentDim(BuildContext context) {
-    return isDark(context) ? AppColors.darkAccentDim : AppColors.lightAccentDim;
+    return accent(context).withValues(alpha: isDark(context) ? 0.16 : 0.12);
   }
 
   static Color dock(BuildContext context) {
@@ -205,7 +225,26 @@ abstract final class AppColors {
   static const Color accentDim = darkAccentDim;
 }
 
+Color appAccentColor(String id, Brightness brightness) {
+  final bool dark = brightness == Brightness.dark;
+  return switch (id) {
+    'blue' => dark ? const Color(0xFF60A5FA) : const Color(0xFF2563EB),
+    'violet' => dark ? const Color(0xFFA78BFA) : const Color(0xFF7C3AED),
+    'rose' => dark ? const Color(0xFFFB7185) : const Color(0xFFE11D48),
+    'amber' => dark ? const Color(0xFFFBBF24) : const Color(0xFFD97706),
+    'green' => dark ? const Color(0xFF4ADE80) : const Color(0xFF16A34A),
+    _ => dark ? AppColors.darkAccent : AppColors.lightAccent,
+  };
+}
+
 abstract final class AppRadii {
   static const double sm = 6;
   static const double md = 10;
+}
+
+SnackBar appSnack(String message) {
+  return SnackBar(
+    content: Text(message),
+    margin: const EdgeInsets.fromLTRB(16, 0, 16, 96),
+  );
 }
