@@ -19,17 +19,17 @@ class LanTransferService extends ChangeNotifier {
 
   final LanHistoryStore _historyStore;
   final Map<String, LanPeer> _peers = <String, LanPeer>{};
+  final Set<String> _pendingPeerChecks = <String>{};
   final Random _random = Random.secure();
 
   HttpServer? _server;
   RawDatagramSocket? _discoverySocket;
   Timer? _announceTimer;
   Timer? _pruneTimer;
+  Timer? _scanTimer;
   List<LanTransferRecord> _history = const <LanTransferRecord>[];
   late final String _deviceId = _newId();
-  late final String _deviceName = Platform.localHostname.isEmpty
-      ? 'JAVBUS 设备'
-      : Platform.localHostname;
+  late final String _deviceName = _defaultDeviceName();
   bool _starting = false;
   String? _error;
 
@@ -73,7 +73,12 @@ class LanTransferService extends ChangeNotifier {
         const Duration(seconds: 5),
         (_) => _prunePeers(),
       );
+      _scanTimer = Timer.periodic(
+        const Duration(seconds: 30),
+        (_) => unawaited(_scanLocalNetwork()),
+      );
       announce();
+      unawaited(_scanLocalNetwork());
     } catch (error) {
       _error = error.toString();
       await stop();
@@ -88,6 +93,8 @@ class LanTransferService extends ChangeNotifier {
     _announceTimer = null;
     _pruneTimer?.cancel();
     _pruneTimer = null;
+    _scanTimer?.cancel();
+    _scanTimer = null;
     _discoverySocket?.close();
     _discoverySocket = null;
     await _server?.close(force: true);
@@ -112,29 +119,16 @@ class LanTransferService extends ChangeNotifier {
       }),
     );
     socket.send(data, InternetAddress('255.255.255.255'), discoveryPort);
+    unawaited(_sendDirectedBroadcasts(data));
   }
 
   Future<LanPeer> addManualPeer(String value) async {
     final Uri uri = _parsePeerEndpoint(value);
-    final http.Response response = await http
-        .get(uri.replace(path: '/api/lan/ping'))
-        .timeout(const Duration(seconds: 5));
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException('HTTP ${response.statusCode}: ${response.body}');
-    }
-    final Object? decoded = jsonDecode(response.body);
-    if (decoded is! Map<String, Object?> || decoded['protocol'] != protocol) {
+    final LanPeer? peer = await _pingPeer(uri.host, uri.port);
+    if (peer == null) {
       throw const FormatException('不是 JAVBUS 互传设备');
     }
-    final LanPeer peer = LanPeer(
-      id: _string(decoded['deviceId'], 'manual-${uri.host}:${uri.port}'),
-      name: _string(decoded['deviceName'], '${uri.host}:${uri.port}'),
-      address: uri.host,
-      port: uri.port,
-      lastSeen: DateTime.now(),
-    );
-    _peers[peer.id] = peer;
-    notifyListeners();
+    _rememberPeer(peer);
     return peer;
   }
 
@@ -156,6 +150,7 @@ class LanTransferService extends ChangeNotifier {
               'sessionId': sessionId,
               'senderId': _deviceId,
               'senderName': _deviceName,
+              'senderPort': _server?.port,
               'text': trimmed,
               'createdAt': DateTime.now().toIso8601String(),
             }),
@@ -208,24 +203,7 @@ class LanTransferService extends ChangeNotifier {
           'fileSize': fileSize.toString(),
         },
       );
-      final http.StreamedRequest request = http.StreamedRequest('POST', uri);
-      request.headers.addAll(<String, String>{
-        'X-Javbus-Protocol': protocol,
-        'X-Javbus-Device-Id': _deviceId,
-        'X-Javbus-Device-Name': _deviceName,
-        HttpHeaders.contentTypeHeader: 'application/octet-stream',
-      });
-      request.contentLength = fileSize;
-      await request.sink.addStream(file.openRead());
-      await request.sink.close();
-      final http.StreamedResponse response = await request.send().timeout(
-        const Duration(minutes: 30),
-      );
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        final String body = await response.stream.bytesToString();
-        throw HttpException('HTTP ${response.statusCode}: $body');
-      }
-      await response.stream.drain<void>();
+      await _postFile(uri, file, fileSize).timeout(const Duration(minutes: 10));
       await _addRecord(
         LanTransferRecord(
           id: _newId(),
@@ -271,6 +249,7 @@ class LanTransferService extends ChangeNotifier {
   Future<void> _handleRequest(HttpRequest request) async {
     try {
       if (request.method == 'GET' && request.uri.path == '/api/lan/ping') {
+        _rememberPeerFromRequest(request);
         _writeJson(request, <String, Object?>{
           'protocol': protocol,
           'deviceId': _deviceId,
@@ -309,6 +288,13 @@ class LanTransferService extends ChangeNotifier {
       decoded['senderName'],
       request.connectionInfo?.remoteAddress.address ?? '未知设备',
     );
+    final int senderPort = _intValue(decoded['senderPort']);
+    _rememberPeerFromRequest(
+      request,
+      id: senderId,
+      name: senderName,
+      port: senderPort,
+    );
     final String text = _string(decoded['text']);
     await _addRecord(
       LanTransferRecord(
@@ -334,6 +320,15 @@ class LanTransferService extends ChangeNotifier {
         request.headers.value('X-Javbus-Device-Name') ??
         request.connectionInfo?.remoteAddress.address ??
         '未知设备';
+    final int senderPort = _intValue(
+      request.headers.value('X-Javbus-Device-Port'),
+    );
+    _rememberPeerFromRequest(
+      request,
+      id: senderId,
+      name: senderName,
+      port: senderPort,
+    );
     final String requestedName =
         request.uri.queryParameters['fileName'] ?? 'received-file';
     final Directory directory = await _historyStore.receivedDirectory();
@@ -412,17 +407,240 @@ class LanTransferService extends ChangeNotifier {
         if (port <= 0) {
           continue;
         }
-        _peers[id] = LanPeer(
-          id: id,
-          name: _string(decoded['deviceName'], current.address.address),
-          address: current.address.address,
-          port: port,
-          lastSeen: DateTime.now(),
+        _checkAndRememberPeer(
+          current.address.address,
+          port,
+          announcedId: id,
+          announcedName: _string(
+            decoded['deviceName'],
+            current.address.address,
+          ),
         );
-        notifyListeners();
       } on Object {
         continue;
       }
+    }
+  }
+
+  Future<void> _postFile(Uri uri, File file, int fileSize) async {
+    final HttpClient client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final HttpClientRequest request = await client.postUrl(uri);
+      request
+        ..headers.set('X-Javbus-Protocol', protocol)
+        ..headers.set('X-Javbus-Device-Id', _deviceId)
+        ..headers.set('X-Javbus-Device-Name', _deviceName)
+        ..headers.set(
+          'X-Javbus-Device-Port',
+          (_server?.port ?? transferPort).toString(),
+        )
+        ..headers.contentType = ContentType.binary
+        ..contentLength = fileSize;
+      await request.addStream(file.openRead());
+      final HttpClientResponse response = await request.close();
+      final String body = await utf8.decoder.bind(response).join();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('HTTP ${response.statusCode}: $body');
+      }
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  void _rememberPeerFromRequest(
+    HttpRequest request, {
+    String? id,
+    String? name,
+    int? port,
+  }) {
+    final InternetAddress? address = request.connectionInfo?.remoteAddress;
+    if (address == null || address.isLoopback) {
+      return;
+    }
+    final int peerPort =
+        port ?? _intValue(request.headers.value('X-Javbus-Device-Port'));
+    if (peerPort <= 0) {
+      return;
+    }
+    final String peerId =
+        id ?? request.headers.value('X-Javbus-Device-Id') ?? '';
+    if (peerId.isEmpty || peerId == _deviceId) {
+      return;
+    }
+    final String peerName =
+        name ??
+        request.headers.value('X-Javbus-Device-Name') ??
+        address.address;
+    _rememberPeer(
+      LanPeer(
+        id: peerId,
+        name: _displayPeerName(peerName, address.address),
+        address: address.address,
+        port: peerPort,
+        lastSeen: DateTime.now(),
+      ),
+    );
+  }
+
+  void _checkAndRememberPeer(
+    String address,
+    int port, {
+    String? announcedId,
+    String? announcedName,
+  }) {
+    if (_isBadPeerAddress(address)) {
+      return;
+    }
+    final String key = '$address:$port';
+    if (_pendingPeerChecks.contains(key)) {
+      return;
+    }
+    _pendingPeerChecks.add(key);
+    unawaited(
+      _pingPeer(address, port)
+          .then((LanPeer? peer) {
+            if (peer != null) {
+              _rememberPeer(peer);
+            }
+          })
+          .whenComplete(() => _pendingPeerChecks.remove(key)),
+    );
+  }
+
+  Future<LanPeer?> _pingPeer(String address, int port) async {
+    if (_isBadPeerAddress(address)) {
+      return null;
+    }
+    try {
+      final http.Response response = await http
+          .get(
+            Uri(
+              scheme: 'http',
+              host: address,
+              port: port,
+              path: '/api/lan/ping',
+            ),
+            headers: <String, String>{
+              'X-Javbus-Device-Id': _deviceId,
+              'X-Javbus-Device-Name': _deviceName,
+              'X-Javbus-Device-Port': (_server?.port ?? transferPort)
+                  .toString(),
+            },
+          )
+          .timeout(const Duration(milliseconds: 900));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return null;
+      }
+      final Object? decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, Object?> || decoded['protocol'] != protocol) {
+        return null;
+      }
+      final String id = _string(decoded['deviceId']);
+      if (id.isEmpty || id == _deviceId) {
+        return null;
+      }
+      return LanPeer(
+        id: id,
+        name: _displayPeerName(_string(decoded['deviceName']), address),
+        address: address,
+        port: _intValue(decoded['port'], port),
+        lastSeen: DateTime.now(),
+      );
+    } on Object {
+      return null;
+    }
+  }
+
+  void _rememberPeer(LanPeer peer) {
+    if (peer.id == _deviceId || _isBadPeerAddress(peer.address)) {
+      return;
+    }
+    _peers[peer.id] = peer;
+    notifyListeners();
+  }
+
+  Future<void> _scanLocalNetwork() async {
+    final HttpServer? server = _server;
+    if (server == null) {
+      return;
+    }
+    final Set<String> candidates = <String>{};
+    try {
+      final List<NetworkInterface> interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final NetworkInterface interface in interfaces) {
+        for (final InternetAddress address in interface.addresses) {
+          final List<String> parts = address.address.split('.');
+          if (parts.length != 4) {
+            continue;
+          }
+          for (int index = 1; index < 255; index += 1) {
+            final String candidate =
+                '${parts[0]}.${parts[1]}.${parts[2]}.$index';
+            if (candidate != address.address) {
+              candidates.add(candidate);
+            }
+          }
+        }
+      }
+    } on Object {
+      return;
+    }
+    const int concurrency = 32;
+    final List<String> queue = candidates.toList(growable: false);
+    int nextIndex = 0;
+    Future<void> worker() async {
+      while (nextIndex < queue.length) {
+        final String address = queue[nextIndex];
+        nextIndex += 1;
+        final String key = '$address:$transferPort';
+        if (_pendingPeerChecks.contains(key)) {
+          continue;
+        }
+        _pendingPeerChecks.add(key);
+        try {
+          final LanPeer? peer = await _pingPeer(address, transferPort);
+          if (peer != null) {
+            _rememberPeer(peer);
+          }
+        } finally {
+          _pendingPeerChecks.remove(key);
+        }
+      }
+    }
+
+    await Future.wait<void>(
+      List<Future<void>>.generate(concurrency, (_) => worker()),
+    );
+  }
+
+  Future<void> _sendDirectedBroadcasts(List<int> data) async {
+    final RawDatagramSocket? socket = _discoverySocket;
+    if (socket == null) {
+      return;
+    }
+    try {
+      final List<NetworkInterface> interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final NetworkInterface interface in interfaces) {
+        for (final InternetAddress address in interface.addresses) {
+          final List<String> parts = address.address.split('.');
+          if (parts.length == 4) {
+            socket.send(
+              data,
+              InternetAddress('${parts[0]}.${parts[1]}.${parts[2]}.255'),
+              discoveryPort,
+            );
+          }
+        }
+      }
+    } on Object {
+      return;
     }
   }
 
@@ -480,6 +698,39 @@ int _intValue(Object? value, [int fallback = 0]) {
     return value.toInt();
   }
   return int.tryParse(value?.toString() ?? '') ?? fallback;
+}
+
+String _defaultDeviceName() {
+  final String host = Platform.localHostname.trim();
+  if (host.isEmpty ||
+      host.toLowerCase() == 'localhost' ||
+      host.toLowerCase() == 'localhost.localdomain') {
+    return Platform.isAndroid ? 'JAVBUS Android' : 'JAVBUS Windows';
+  }
+  return host;
+}
+
+String _displayPeerName(String name, String address) {
+  final String trimmed = name.trim();
+  if (trimmed.isEmpty ||
+      trimmed.toLowerCase() == 'localhost' ||
+      trimmed.toLowerCase() == 'localhost.localdomain') {
+    return address;
+  }
+  return trimmed;
+}
+
+bool _isBadPeerAddress(String address) {
+  final InternetAddress? parsed = InternetAddress.tryParse(address);
+  if (parsed == null) {
+    return true;
+  }
+  return parsed.isLoopback ||
+      parsed.isLinkLocal ||
+      parsed.isMulticast ||
+      parsed.type != InternetAddressType.IPv4 ||
+      address == '0.0.0.0' ||
+      address == '255.255.255.255';
 }
 
 String _fileName(String path) {
