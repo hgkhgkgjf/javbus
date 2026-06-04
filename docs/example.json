@@ -1,0 +1,58 @@
+{
+  "_comment": "这是一个示范插件，不对应真实站点。JSON 不能写 // 注释，所以这里用 _comment 字段做说明。",
+  "schemaVersion": 1,
+  "_schemaVersion_comment": "协议版本。当前实现为 v1。",
+  "id": "example-html",
+  "_id_comment": "插件唯一 ID，建议使用小写英文、数字和短横线。",
+  "name": "Example HTML Source",
+  "_name_comment": "插件在界面上的显示名称。",
+  "enabled": true,
+  "_enabled_comment": "是否启用。示范文件放在 docs 下，不会被当前应用自动加载。",
+  "baseUrl": "https://example.com",
+  "_baseUrl_comment": "相对路径会基于这个地址补全，例如 /search 会变成 https://example.com/search。",
+  "headers": {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  },
+  "_headers_comment": "请求头。不要把注释字段放进 headers 对象里，否则会被当作真实 HTTP Header 发送。",
+  "search": {
+    "_comment": "搜索请求配置。这里演示 HTML 页面 + 正则提取。",
+    "method": "GET",
+    "url": "/search/{query}/{page}",
+    "_url_comment": "{query} 是关键词，{page} 是从 1 开始的页码。",
+    "responseType": "html",
+    "_responseType_comment": "html 表示响应是网页源码；如果是 API，就写 json。",
+    "rootPattern": "<div class=\"result-list\">(.*?)<nav class=\"pager\">",
+    "_rootPattern_comment": "可选。先截取结果列表区域，减少 itemPattern 误匹配。",
+    "itemPattern": "<div class=\"item\">\\s*<a href=\"(?<sourceItemId>[^\"]+)\">(?<title>.*?)</a>\\s*<span class=\"hash\">(?<infoHash>[A-Fa-f0-9]{40})</span>\\s*<span class=\"size\">(?<humanSize>.*?)</span>\\s*<span class=\"seeders\">(?<seeders>\\d+)</span>\\s*</div>"
+  },
+  "detail": {
+    "_comment": "详情请求配置。用于补全标题、文件列表等信息。",
+    "method": "GET",
+    "url": "{sourceItemId}",
+    "_url_comment": "这里把搜索结果中的 sourceItemId 当作详情页地址使用。",
+    "responseType": "html",
+    "itemPattern": "<h1[^>]*>(?<title>.*?)</h1>",
+    "_itemPattern_comment": "详情页也需要 itemPattern；这里用它补全标题。",
+    "filePattern": "<li class=\"file\">\\s*<span class=\"path\">(?<path>.*?)</span>\\s*<span class=\"size\">(?<humanSize>.*?)</span>\\s*</li>"
+  },
+  "_fields_comment": "资源字段映射。右侧值对应 JSON 路径，或 HTML 正则命名捕获组名。",
+  "fields": {
+    "sourceItemId": "sourceItemId",
+    "title": "title",
+    "infoHash": "infoHash",
+    "humanSize": "humanSize",
+    "seeders": "seeders",
+    "webUrl": "sourceItemId"
+  },
+  "_fileFields_comment": "详情页文件列表字段映射。",
+  "fileFields": {
+    "path": "path",
+    "humanSize": "humanSize"
+  },
+  "_defaults_comment": "字段缺失时的默认值模板。常见用法是用 infoHash 生成 magnet。",
+  "defaults": {
+    "magnet": "magnet:?xt=urn:btih:{infoHashUpper}",
+    "webUrl": "{sourceItemId}"
+  }
+}

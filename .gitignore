@@ -1,0 +1,87 @@
+# OS / editors
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
+*.bak
+*.orig
+*~
+
+# IntelliJ / Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code
+# Keep this commented if you later want to commit shared launch/tasks config.
+# .vscode/
+
+# Dart / Flutter / Pub
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub/
+.pub-cache/
+build/
+coverage/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+
+# Flutter symbolication / obfuscation output
+app.*.symbols
+app.*.map.json
+
+# Android local and build output
+android/.gradle/
+android/.kotlin/
+android/.cxx/
+android/build/
+android/app/build/
+android/app/debug/
+android/app/profile/
+android/app/release/
+android/local.properties
+android/key.properties
+android/captures/
+**/*.keystore
+**/*.jks
+*.apk
+*.aab
+
+# Windows generated build output
+windows/flutter/ephemeral/
+windows/runner/Debug/
+windows/runner/Release/
+windows/runner/Profile/
+
+# Swift / miscellaneous template leftovers
+*.class
+*.pyc
+.build/
+.buildlog/
+.history/
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# Local tooling output
+.codex-run/
+.playwright-mcp/
+*.log
+
+# Local app/user data and private source material
+/data/
+/plugins/
+/library/
+/settings/
+assets/plugins/
+搜盘api文档.md
+docs/磁力站.md
+
+# Captured challenge/search pages used during scraper development
+searchqironman.html
+详情页.html
+docs/example.html
