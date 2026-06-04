@@ -32,6 +32,9 @@ flutter build windows --debug --no-pub
 flutter build apk --debug --no-pub
 ```
 
+## Linux.do
+[一个真诚、友善、团结、专业的技术交流社区](https://linux.do/)
+
 ## License
 
 MIT
